@@ -18,6 +18,7 @@ import {
   Academy,
   Announcement,
   Batch,
+  CoachPayment,
   CoachProfile,
   Expense,
   Faq,
@@ -30,13 +31,16 @@ import {
   Program,
   sameId,
   Session,
+  StudentFeePlan,
   StudentProfile,
   Testimonial,
   User,
   Venue,
+  VenuePayment,
 } from "./models/index.js";
 import * as attSvc from "./services/attendance.js";
 import * as batchSvc from "./services/batches.js";
+import * as finance from "./services/finance.js";
 import * as ledger from "./services/ledger.js";
 import * as media from "./services/media.js";
 import { sendReminders } from "./services/notifications.js";
@@ -418,7 +422,7 @@ async function loadDemo(stored) {
     name: "Monthly — 8 sessions",
     plan_type: "monthly",
     number_of_sessions: 8,
-    base_fee: 4000,
+    base_fee: 6000,
     validity_days: 31,
     description: "Two sessions a week for a month",
   });
@@ -427,7 +431,7 @@ async function loadDemo(stored) {
     name: "Monthly — 12 sessions",
     plan_type: "monthly",
     number_of_sessions: 12,
-    base_fee: 5400,
+    base_fee: 8400,
     validity_days: 31,
     description: "Three sessions a week for a month",
   });
@@ -436,7 +440,7 @@ async function loadDemo(stored) {
     name: "Kids — 4 sessions",
     plan_type: "monthly",
     number_of_sessions: 4,
-    base_fee: 2000,
+    base_fee: 3200,
     validity_days: 31,
   });
 
@@ -471,13 +475,13 @@ async function loadDemo(stored) {
       coaches: coachList.map(([c, role]) => ({ coach_id: c._id, role })),
     });
 
-  const tueThu = (start, end, venue) => [[1, start, end, venue, 2], [3, start, end, venue, 2]];
+  const tueThu = (start, end, venue) => [[1, start, end, venue, 1], [3, start, end, venue, 1]];
   const beg = await mkBatch("BEG-TT", "Beginners — Tue/Thu Evening", "beginner", plan8, 6,
     tueThu("17:00", "18:00", venues[0]), [[coaches[0], "lead"]]);
   const inter = await mkBatch("INT-MWF", "Intermediate — Mon/Wed/Fri Morning", "intermediate", plan12, 6,
-    [0, 2, 4].map((d) => [d, "07:00", "08:30", venues[1], 2]), [[coaches[1], "lead"], [coaches[2], "assistant"]]);
+    [0, 2, 4].map((d) => [d, "07:00", "08:30", venues[1], 1]), [[coaches[1], "lead"], [coaches[2], "assistant"]]);
   const adv = await mkBatch("ADV-WE", "Advanced — Weekend Morning", "advanced", plan8, 6,
-    [[5, "07:00", "09:00", venues[0], 2], [6, "07:00", "09:00", venues[0], 2]], [[coaches[0], "lead"]]);
+    [[5, "07:00", "08:30", venues[0], 1], [6, "07:00", "08:30", venues[0], 1]], [[coaches[0], "lead"]]);
   const kids = await mkBatch("KIDS-SAT", "Kids — Saturday Evening", "kids", plan4, 8,
     [[5, "16:00", "17:00", venues[2], 1]], [[coaches[2], "lead"]]);
   const nxt = await mkBatch("BEG-TT", "Beginners — Tue/Thu Evening", "beginner", plan8, 6,
@@ -557,7 +561,10 @@ async function loadDemo(stored) {
   const rules = businessRules(academy);
   const past = await Session.find({ academy_id: academy._id, session_date: { $lt: t } }).sort({ session_date: 1, start_time: 1 });
   let cancelledDone = false;
+  // The last two days stay unrecorded so a coach can mark them live in a demo (inside the edit window).
+  const leaveOpen = addDays(t, -2);
   for (const s of past) {
+    if (s.session_date >= leaveOpen) continue;
     if (!cancelledDone && sameId(s.batch_id, inter._id) && Number(s.session_date.slice(8)) > 3) {
       await attSvc.cancelSession(s, {
         reason: "Court resurfacing at venue",
@@ -607,6 +614,66 @@ async function loadDemo(stored) {
       rules,
       actorId: admin._id,
       isAdmin: true,
+    });
+  }
+
+  // Two finished months before this one: every session recorded, plans closed, coaches and venues paid.
+  for (const back of [2, 1]) {
+    let pStart = mStart;
+    for (let i = 0; i < back; i += 1) pStart = monthStart(addDays(pStart, -1));
+    const pEnd = monthEnd(pStart);
+    const period = [pStart, pEnd];
+    const done = [
+      await mkBatch("BEG-TT", "Beginners — Tue/Thu Evening", "beginner", plan8, 6,
+        tueThu("17:00", "18:00", venues[0]), [[coaches[0], "lead"]], period),
+      await mkBatch("INT-MWF", "Intermediate — Mon/Wed/Fri Morning", "intermediate", plan12, 6,
+        [0, 2, 4].map((d) => [d, "07:00", "08:30", venues[1], 1]), [[coaches[1], "lead"], [coaches[2], "assistant"]], period),
+      await mkBatch("ADV-WE", "Advanced — Weekend Morning", "advanced", plan8, 6,
+        [[5, "07:00", "08:30", venues[0], 1], [6, "07:00", "08:30", venues[0], 1]], [[coaches[0], "lead"]], period),
+      await mkBatch("KIDS-SAT", "Kids — Saturday Evening", "kids", plan4, 8,
+        [[5, "16:00", "17:00", venues[2], 1]], [[coaches[2], "lead"]], period),
+    ];
+    const groups = [[0, 6], [6, 11], [11, 15], [15, 18]];
+    for (const [b, [from, to]] of groups.entries()) {
+      for (let i = from; i < to; i += 1) await enroll(done[b], students[i]);
+      await batchSvc.generateSessions(done[b], pStart, pEnd);
+    }
+    const sessions = await Session.find({ batch_id: { $in: done.map((b) => b._id) } }).sort({ session_date: 1, start_time: 1 });
+    for (const s of sessions) {
+      const roster = await batchSvc.regularEnrollmentsOn(s.batch_id, s.session_date);
+      await attSvc.recordSession(s, {
+        entries: roster.map((e) => ({ student_id: e.student_id, status: rnd.random() < 0.1 ? "absent" : "present" })),
+        coaches: s.coaches.map((c) => ({ coach_id: c.coach_id, hours_coached: c.scheduled_hours })),
+        rules,
+        actorId: s.coaches.length ? s.coaches[0].coach_id : admin._id,
+        isAdmin: true,
+      });
+    }
+    for (const plan of await StudentFeePlan.find({ batch_id: { $in: done.map((b) => b._id) }, status: "active" })) {
+      await ledger.closePlan(plan, "carry_forward", admin._id);
+    }
+    await Batch.updateMany({ _id: { $in: done.map((b) => b._id) } }, { status: "completed" });
+
+    const paidOn = addDays(pEnd, 5);
+    for (const c of coaches) {
+      const amount = await finance.coachPayableTotal(academy._id, pStart, pEnd, { coachId: c._id });
+      if (amount > 0) {
+        await CoachPayment.create({ academy_id: academy._id, coach_id: c._id, period_month: pStart, amount, paid_on: paidOn, created_by_id: admin._id });
+      }
+    }
+    for (const v of venues) {
+      const amount = await finance.venuePayableTotal(academy._id, pStart, pEnd, { venueId: v._id });
+      if (amount > 0) {
+        await VenuePayment.create({ academy_id: academy._id, venue_id: v._id, period_month: pStart, amount, paid_on: paidOn, created_by_id: admin._id });
+      }
+    }
+    await Expense.create({
+      academy_id: academy._id,
+      category: "equipment",
+      description: "Replacement balls and court tape",
+      vendor: "Sports Depot",
+      amount: 2800,
+      expense_date: addDays(pStart, 3),
     });
   }
 

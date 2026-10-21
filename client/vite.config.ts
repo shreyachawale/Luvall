@@ -12,6 +12,7 @@ export default defineConfig({
   resolve: { alias: { "@": path.resolve(__dirname, "src") } },
   server: {
     port: 5173,
+    host: true, // also listen on the LAN so phones on the same Wi-Fi can open it
     proxy: { "/api": API, "/media": API },
   },
   build: { outDir: "dist", sourcemap: false, chunkSizeWarningLimit: 900 },

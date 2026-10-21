@@ -1,9 +1,0 @@
-# Caddy obtains and renews the HTTPS certificate automatically for {$SITE_DOMAIN}.
-{$SITE_DOMAIN} {
-	encode zstd gzip
-	reverse_proxy app:4000
-	header {
-		Strict-Transport-Security "max-age=31536000; includeSubDomains"
-		-Server
-	}
-}

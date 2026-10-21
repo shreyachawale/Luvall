@@ -19,18 +19,17 @@ release only**; future-scope items are not built (see [docs/SCOPE.md](docs/SCOPE
 - **R**eact 19 + React Router 7 + TypeScript + Tailwind CSS 4 + SWR, built with Vite. Code in `client/`.
   The look (condensed uppercase headlines, court imagery, rounded photo tiles) is described in
   [docs/DESIGN.md](docs/DESIGN.md).
-- **Deploy:** one Docker image (Express serves the API, the built React app and uploaded media), Docker Compose with
-  MongoDB, Caddy (automatic HTTPS) and nightly database + media backups.
+- **Deploy:** one Node process (Express serves the API, the built React app and uploaded media) next to MongoDB.
 
 ## Run locally
 
 Requirements: Node 22, MongoDB 7 or 8 running as a replica set (transactions need one).
 
 ```bash
-# 1. MongoDB as a one-node replica set (Docker shown; a local mongod with --replSet rs0 works too)
-docker run -d --name luvall-mongo -p 27017:27017 mongo:8.0 --replSet rs0 --bind_ip_all
-docker exec luvall-mongo mongosh --quiet --eval \
-  "rs.initiate({_id: 'rs0', members: [{_id: 0, host: 'localhost:27017'}]})"
+# 1. MongoDB as a one-node replica set (macOS: brew install mongodb-community)
+mkdir -p ~/data/luvall-db
+mongod --replSet rs0 --dbpath ~/data/luvall-db --fork --logpath ~/data/luvall-db/mongod.log
+mongosh --quiet --eval "rs.initiate({_id: 'rs0', members: [{_id: 0, host: 'localhost:27017'}]})"  # first time only
 
 # 2. API (http://localhost:4000)
 cd server
@@ -82,26 +81,18 @@ access, CSRF origin checks, login rate limiting, CMS publish windows, image vali
 
 ## Production
 
-1. Point the domain's DNS at the server and install Docker.
-2. `cp .env.example .env` and fill in `SITE_DOMAIN` and `JWT_SECRET`.
-3. `docker compose up -d --build` — MongoDB initiates its replica set on first start, indexes are created when the app
-   starts, and Caddy fetches the HTTPS certificate.
-4. Create the academy and first admin:
-   `docker compose exec app node src/cli.js init --admin-name "Owner" --admin-mobile 98xxxxxxxx`
+1. Run MongoDB as a replica set (as above) and build the client: `cd client && npm ci && npm run build`.
+2. Start the server with `NODE_ENV=production`, a random `JWT_SECRET`, `COOKIE_SECURE=true`,
+   `SITE_URL=https://<domain>` and `ALLOWED_ORIGINS=https://<domain>`: `cd server && npm ci && npm start`.
+   Put an HTTPS reverse proxy (nginx, Caddy, …) in front of port 4000.
+3. Create the academy and first admin: `npm run cli -- init --admin-name "Owner" --admin-mobile 98xxxxxxxx`
    (prompts for the password).
-5. Sign in at `https://<domain>/login` → **Settings** (UPI ID, QR image, WhatsApp number, policies) → **Venues** (rates)
+4. Sign in at `https://<domain>/login` → **Settings** (UPI ID, QR image, WhatsApp number, policies) → **Venues** (rates)
    → **Coaches** (rates) → **Fee plans** → **Batches** → **Generate sessions** → **Website & marketing**.
 
-**Backups:** the `backup` service writes `backups/db-*.archive.gz` (mongodump) and `backups/media-*.tar.gz` daily
-and keeps 14 days (`BACKUP_KEEP_DAYS`). Copy the `backups/` folder off the server regularly. Restore:
+**Backups:** `mongodump --archive --gzip` the database and tar `server/media` regularly.
 
-```bash
-docker compose exec -T mongo mongorestore --archive --gzip --drop < backups/db-YYYYMMDD-HHMM.archive.gz
-docker compose run --rm -v "$PWD/backups:/b" app sh -c "tar -xzf /b/media-YYYYMMDD-HHMM.tar.gz -C /app/media"
-```
-
-**Monitoring:** `GET /api/health` (pings the database); logs are structured JSON lines
-(`docker compose logs -f app`).
+**Monitoring:** `GET /api/health` (pings the database); logs are structured JSON lines on stdout.
 
 ## Operations CLI
 
@@ -111,8 +102,6 @@ npm run cli -- import-students students.csv   # columns: name,mobile,email,skill
 npm run cli -- send-reminders                 # session reminders through the notifier (logs only for now)
 npm run cli -- demo                           # sample data for development / UAT
 ```
-
-In Docker: `docker compose exec app node src/cli.js <command> …`.
 
 ## How the money works
 
@@ -138,7 +127,6 @@ server/src/cli.js       init, demo, import-students, send-reminders
 server/test             vitest suite
 client/src/pages        public site, student/, coach/, admin/
 client/src/components   ui kit, portal shell, attendance editor, admin CRUD/forms, charts
-deploy/                 Caddyfile, backup script
 docs/SCOPE.md           scope, assumptions and open client decisions
 docs/DESIGN.md          visual design system (tokens, type, components, patterns)
 ```

@@ -19,7 +19,7 @@ Mapped to the BRD's initial-release acceptance criteria (section 16):
 | 11 | Coach dashboard: assigned sessions, students | Coach portal |
 | 12 | Website content updated through the CMS | Admin → Website & marketing (homepage, posts, programs, events, testimonials, FAQs, announcements) |
 | 13 | Upload/publish images, manage gallery | Website → Media library, Gallery albums |
-| 14 | HTTPS, backups, basic monitoring | `docker-compose.yml` (Caddy auto-HTTPS, nightly `mongodump` + media backups), `/api/health`, JSON logs |
+| 14 | HTTPS, backups, basic monitoring | HTTPS via a reverse proxy, `mongodump` + media backups (see README), `/api/health`, JSON logs |
 | 15 | Master data migration | `npm run cli -- import-students file.csv` + opening balances; ledger "opening balance" adjustments |
 
 Also included from the brief: dynamic campaigns with cover image, multiple images, reel/video URL, category,
